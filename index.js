@@ -1,9 +1,16 @@
 import Fastify from "fastify";
 import fastifyEnv from "@fastify/env";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import fastifyRedis from "@fastify/redis";
 import fastifyPostgres from "@fastify/postgres";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Server } from "socket.io";
+import { instrument } from "@socket.io/admin-ui";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const schema = {
   type: "object",
@@ -46,6 +53,12 @@ await fastify.register(fastifyRedis, {
 
 await fastify.register(fastifyPostgres, {
   connectionString: fastify.config.DB_URL,
+});
+
+await fastify.register(fastifyStatic, {
+  root: join(__dirname, "dist"),
+  prefix: "/admin",
+  redirect: true,
 });
 
 fastify.get("/liveness", (request, reply) => {
@@ -117,9 +130,19 @@ fastify.get("/readiness", async (request, reply) => {
 const io = new Server(fastify.server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: "*",
+    credentials: true,
   },
   transports: ["websocket"],
+});
+
+instrument(io, {
+  auth: {
+    type: "basic",
+    username: "admin",
+    password: "$2a$10$QWUn5UhhE3eSAu2a95fVn.PRVaamlJlJBMeT7viIrvgvfCOeUIV2W",
+  },
+  mode: "development",
 });
 
 io.on("connection", (socket) => {
