@@ -1,0 +1,107 @@
+name: Deploy Workflow
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Branch Name
+        run: echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+
+      - name: Get Commit Message
+        run: echo "COMMIT_MESSAGE=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.1.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            cd ~/git/socketing-queue-server
+            git clean -fd
+            git fetch
+            git reset --hard origin/master
+            cp .env.production .env -f
+            echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" >/tmp/vault_password
+            ansible-vault decrypt .env --vault-password-file=/tmp/vault_password
+            rm /tmp/vault_password
+            ./run.sh -m p -f
+
+      - name: Send Discord Notification on Success with Embed
+        if: success()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REPO_URL: https://github.com/${{ github.repository }}
+          BRANCH_NAME: ${{ env.BRANCH_NAME }}
+          COMMIT_MESSAGE: ${{ env.COMMIT_MESSAGE }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d '{
+                "embeds": [{
+                  "title": "✅ Deployment Succeeded",
+                  "description": "[View Repository]('"${REPO_URL}"') | [View Commit]('"${COMMIT_URL}"')",
+                  "color": 3066993,
+                  "fields": [
+                    {"name": "Repository", "value": "[**'"${GITHUB_REPOSITORY}"'**]('"${REPO_URL}"')", "inline": true},
+                    {"name": "Branch", "value": "`'"${BRANCH_NAME}"'`", "inline": true},
+                    {"name": "Commit Message", "value": "'"${COMMIT_MESSAGE}"'", "inline": false},
+                    {"name": "Triggered By", "value": "'"${GITHUB_ACTOR}"'", "inline": true},
+                    {"name": "Commit SHA", "value": "[`'"${COMMIT_SHA}"'`]('"${COMMIT_URL}"')", "inline": false}
+                  ],
+                  "footer": {
+                    "text": "Deployment Status"
+                  },
+                  "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+                }]
+              }' \
+          $DISCORD_WEBHOOK_URL
+
+      - name: Send Discord Notification on Failure with Embed
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REPO_URL: https://github.com/${{ github.repository }}
+          BRANCH_NAME: ${{ env.BRANCH_NAME }}
+          COMMIT_MESSAGE: ${{ env.COMMIT_MESSAGE }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d '{
+                "embeds": [{
+                  "title": "❌ Deployment Failed",
+                  "description": "[View Repository]('"${REPO_URL}"') | [View Commit]('"${COMMIT_URL}"')",
+                  "color": 15158332,
+                  "fields": [
+                    {"name": "Repository", "value": "[**'"${GITHUB_REPOSITORY}"'**]('"${REPO_URL}"')", "inline": true},
+                    {"name": "Branch", "value": "`'"${BRANCH_NAME}"'`", "inline": true},
+                    {"name": "Commit Message", "value": "'"${COMMIT_MESSAGE}"'", "inline": false},
+                    {"name": "Triggered By", "value": "'"${GITHUB_ACTOR}"'", "inline": true},
+                    {"name": "Commit SHA", "value": "[`'"${COMMIT_SHA}"'`]('"${COMMIT_URL}"')", "inline": false}
+                  ],
+                  "footer": {
+                    "text": "Deployment Status"
+                  },
+                  "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+                }]
+              }' \
+          $DISCORD_WEBHOOK_URL

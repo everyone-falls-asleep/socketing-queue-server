@@ -1,0 +1,27 @@
+{
+  "apps": [
+    {
+      "name": "socketing-queue-server",
+      "cwd": "./",
+      "script": "./index.js",
+      "instances": "1",
+      "exec_mode": "fork",
+      "merge_logs": true,
+      "autorestart": true,
+      "watch": false,
+      "wait_ready": true,
+      "listen_timeout": 50000,
+      "kill_timeout": 5000,
+      "instance_var": "PM2_INSTANCE_ID",
+      "env_local": {
+        "NODE_ENV": "local"
+      },
+      "env_dev": {
+        "NODE_ENV": "dev"
+      },
+      "env_production": {
+        "NODE_ENV": "production"
+      }
+    }
+  ]
+}
