@@ -4,19 +4,33 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import fastifyRedis from "@fastify/redis";
 import fastifyPostgres from "@fastify/postgres";
+import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
+import { instrument } from "@socket.io/admin-ui";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Server } from "socket.io";
-import { instrument } from "@socket.io/admin-ui";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const schema = {
   type: "object",
-  required: ["PORT", "CACHE_HOST", "CACHE_PORT", "DB_URL"],
+  required: [
+    "PORT",
+    "JWT_SECRET",
+    "JWT_SECRET_FOR_ENTRANCE",
+    "CACHE_HOST",
+    "CACHE_PORT",
+    "DB_URL",
+  ],
   properties: {
     PORT: {
+      type: "string",
+    },
+    JWT_SECRET: {
+      type: "string",
+    },
+    JWT_SECRET_FOR_ENTRANCE: {
       type: "string",
     },
     CACHE_HOST: {
@@ -143,6 +157,22 @@ instrument(io, {
     password: "$2a$10$QWUn5UhhE3eSAu2a95fVn.PRVaamlJlJBMeT7viIrvgvfCOeUIV2W",
   },
   mode: "development",
+});
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+
+  if (!token) {
+    return next(new Error("Authentication error"));
+  }
+
+  try {
+    const decoded = jwt.verify(token, fastify.config.JWT_SECRET);
+    socket.data.user = decoded;
+    next();
+  } catch (err) {
+    return next(new Error("Authentication error"));
+  }
 });
 
 io.on("connection", (socket) => {
