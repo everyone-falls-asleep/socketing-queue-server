@@ -25,7 +25,7 @@ const schema = {
   ],
   properties: {
     PORT: {
-      type: "string",
+      type: "integer",
     },
     JWT_SECRET: {
       type: "string",
@@ -175,18 +175,123 @@ io.use((socket, next) => {
   }
 });
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const queueMap = new Map();
+
+function removeClient(queueName, socketId) {
+  const queue = queueMap.get(queueName);
+  if (queue) {
+    const index = queue.indexOf(socketId);
+    if (index !== -1) {
+      queue.splice(index, 1);
+    }
+    if (queue.length === 0) {
+      queueMap.delete(queueName); // 큐가 비어 있으면 삭제
+    }
+  }
+}
+
+function broadcastQueueUpdate(queueName) {
+  const queue = queueMap.get(queueName) || [];
+  queue.forEach((socketId, index) => {
+    const socket = io.sockets.sockets.get(socketId);
+    if (socket) {
+      socket.emit("updateQueue", {
+        yourPosition: index + 1,
+        totalWaiting: queue.length,
+      });
+    }
+  });
+}
+
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
 
+  socket.on("joinQueue", async ({ eventId, eventDateId }) => {
+    if (!eventId || !eventDateId) {
+      socket.emit("error", { message: "Invalid queue parameters." });
+      socket.disconnect(true);
+      return;
+    }
+
+    const sub = socket.data.user?.sub;
+    if (!sub) {
+      socket.emit("error", { message: "Invalid user data." });
+      socket.disconnect(true);
+      return;
+    }
+
+    const queueName = `${eventId}_${eventDateId}`;
+
+    // 중복 연결 방지
+    const queue = queueMap.get(queueName) || [];
+    if (queue.includes(socket.id)) {
+      socket.emit("error", { message: "Already in the queue." });
+      socket.disconnect(true);
+      return;
+    }
+
+    // 큐에 유저 추가
+    queue.push(socket.id);
+    queueMap.set(queueName, queue);
+
+    socket.join(queueName);
+    broadcastQueueUpdate(queueName);
+
+    fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
+
+    try {
+      await sleep(4000);
+
+      const token = jwt.sign(
+        {
+          sub,
+          eventId,
+          eventDateId,
+        },
+        fastify.config.JWT_SECRET_FOR_ENTRANCE,
+        {
+          expiresIn: 600,
+        }
+      );
+
+      socket.emit("tokenIssued", { token });
+      fastify.log.info(`Token issued to client ${socket.id}`);
+
+      // 큐에서 제거 및 연결 종료
+      removeClient(queueName, socket.id);
+      broadcastQueueUpdate(queueName);
+
+      socket.disconnect(true);
+    } catch (err) {
+      fastify.log.error(
+        `Error processing queue for ${socket.id}: ${err.message}`
+      );
+      socket.emit("error", { message: "Internal server error." });
+      socket.disconnect(true);
+    }
+  });
+
   socket.on("disconnect", () => {
     fastify.log.info(`Client disconnected: ${socket.id}`);
+
+    // 모든 큐에서 유저 제거
+    for (const [queueName, queue] of queueMap.entries()) {
+      if (queue.includes(socket.id)) {
+        removeClient(queueName, socket.id);
+        broadcastQueueUpdate(queueName);
+        break;
+      }
+    }
   });
 });
 
 const startServer = async () => {
   try {
-    const port = Number(fastify.config.PORT);
-    const address = await fastify.listen({ port, host: "0.0.0.0" });
+    const address = await fastify.listen({
+      port: fastify.config.PORT,
+      host: "0.0.0.0",
+    });
 
     fastify.log.info(`Server is now listening on ${address}`);
 
