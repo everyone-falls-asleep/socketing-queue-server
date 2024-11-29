@@ -143,8 +143,6 @@ fastify.get("/readiness", async (request, reply) => {
   }
 });
 
-// const pubClient = new Redis();
-
 const pubClient = new Redis({
   host: fastify.config.CACHE_HOST,
   port: fastify.config.CACHE_PORT,
@@ -224,14 +222,15 @@ async function getQueue(queueName) {
 
 async function broadcastQueueUpdate(queueName) {
   const queue = await getQueue(queueName);
-  queue.forEach((socketId, index) => {
-    const socket = io.sockets.sockets.get(socketId);
-    if (socket) {
-      socket.emit("updateQueue", {
-        yourPosition: index + 1,
-        totalWaiting: queue.length,
-      });
-    }
+
+  const socketsInRoom = await io.in(queueName).fetchSockets();
+
+  socketsInRoom.forEach((socket) => {
+    const position = queue.indexOf(socket.id) + 1;
+    socket.emit("updateQueue", {
+      yourPosition: position,
+      totalWaiting: queue.length,
+    });
   });
 }
 
@@ -252,7 +251,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const queueName = `${eventId}_${eventDateId}`;
+    const queueName = `queue:${eventId}_${eventDateId}`;
 
     // 중복 연결 방지
     const queue = await getQueue(queueName);
