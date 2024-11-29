@@ -4,7 +4,6 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import fastifyRedis from "@fastify/redis";
 import fastifyPostgres from "@fastify/postgres";
-import { Redis } from "ioredis";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import jwt from "jsonwebtoken";
@@ -143,11 +142,8 @@ fastify.get("/readiness", async (request, reply) => {
   }
 });
 
-const pubClient = new Redis({
-  host: fastify.config.CACHE_HOST,
-  port: fastify.config.CACHE_PORT,
-});
-const subClient = pubClient.duplicate();
+const pubClient = fastify.redis.duplicate();
+const subClient = fastify.redis.duplicate();
 
 const io = new Server(fastify.server, {
   cors: {
