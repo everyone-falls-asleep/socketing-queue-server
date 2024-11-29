@@ -4,7 +4,9 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import fastifyRedis from "@fastify/redis";
 import fastifyPostgres from "@fastify/postgres";
+import { Redis } from "ioredis";
 import { Server } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
 import jwt from "jsonwebtoken";
 import { instrument } from "@socket.io/admin-ui";
 import { fileURLToPath } from "node:url";
@@ -141,6 +143,14 @@ fastify.get("/readiness", async (request, reply) => {
   }
 });
 
+// const pubClient = new Redis();
+
+const pubClient = new Redis({
+  host: fastify.config.CACHE_HOST,
+  port: fastify.config.CACHE_PORT,
+});
+const subClient = pubClient.duplicate();
+
 const io = new Server(fastify.server, {
   cors: {
     origin: "*",
@@ -149,6 +159,8 @@ const io = new Server(fastify.server, {
   },
   transports: ["websocket"],
 });
+
+io.adapter(createAdapter(pubClient, subClient));
 
 instrument(io, {
   auth: {
@@ -176,23 +188,42 @@ io.use((socket, next) => {
 });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const queueMap = new Map();
 
-function removeClient(queueName, socketId) {
-  const queue = queueMap.get(queueName);
-  if (queue) {
-    const index = queue.indexOf(socketId);
-    if (index !== -1) {
-      queue.splice(index, 1);
-    }
-    if (queue.length === 0) {
-      queueMap.delete(queueName); // 큐가 비어 있으면 삭제
-    }
+async function scanForKeys(pattern) {
+  let cursor = "0";
+  const keys = [];
+  do {
+    const [newCursor, foundKeys] = await fastify.redis.scan(
+      cursor,
+      "MATCH",
+      pattern,
+      "COUNT",
+      100
+    );
+    cursor = newCursor;
+    keys.push(...foundKeys);
+  } while (cursor !== "0");
+  return keys;
+}
+
+async function addClientToQueue(queueName, socketId) {
+  await fastify.redis.rpush(queueName, socketId);
+}
+
+async function removeClientFromQueue(queueName, socketId) {
+  await fastify.redis.lrem(queueName, 0, socketId);
+  const queueLength = await fastify.redis.llen(queueName);
+  if (queueLength === 0) {
+    await fastify.redis.del(queueName); // 큐가 비어 있으면 삭제
   }
 }
 
-function broadcastQueueUpdate(queueName) {
-  const queue = queueMap.get(queueName) || [];
+async function getQueue(queueName) {
+  return await fastify.redis.lrange(queueName, 0, -1);
+}
+
+async function broadcastQueueUpdate(queueName) {
+  const queue = await getQueue(queueName);
   queue.forEach((socketId, index) => {
     const socket = io.sockets.sockets.get(socketId);
     if (socket) {
@@ -224,7 +255,7 @@ io.on("connection", (socket) => {
     const queueName = `${eventId}_${eventDateId}`;
 
     // 중복 연결 방지
-    const queue = queueMap.get(queueName) || [];
+    const queue = await getQueue(queueName);
     if (queue.includes(socket.id)) {
       socket.emit("error", { message: "Already in the queue." });
       socket.disconnect(true);
@@ -232,11 +263,9 @@ io.on("connection", (socket) => {
     }
 
     // 큐에 유저 추가
-    queue.push(socket.id);
-    queueMap.set(queueName, queue);
-
+    await addClientToQueue(queueName, socket.id);
     socket.join(queueName);
-    broadcastQueueUpdate(queueName);
+    await broadcastQueueUpdate(queueName);
 
     fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
@@ -259,8 +288,8 @@ io.on("connection", (socket) => {
       fastify.log.info(`Token issued to client ${socket.id}`);
 
       // 큐에서 제거 및 연결 종료
-      removeClient(queueName, socket.id);
-      broadcastQueueUpdate(queueName);
+      await removeClientFromQueue(queueName, socket.id);
+      await broadcastQueueUpdate(queueName);
 
       socket.disconnect(true);
     } catch (err) {
@@ -272,14 +301,13 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
-    fastify.log.info(`Client disconnected: ${socket.id}`);
-
-    // 모든 큐에서 유저 제거
-    for (const [queueName, queue] of queueMap.entries()) {
+  socket.on("disconnect", async () => {
+    const keys = await scanForKeys("queue:*");
+    for (const queueName of keys) {
+      const queue = await getQueue(queueName);
       if (queue.includes(socket.id)) {
-        removeClient(queueName, socket.id);
-        broadcastQueueUpdate(queueName);
+        await removeClientFromQueue(queueName, socket.id);
+        await broadcastQueueUpdate(queueName);
         break;
       }
     }
