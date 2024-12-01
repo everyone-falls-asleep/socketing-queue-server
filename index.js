@@ -262,6 +262,37 @@ async function broadcastQueueUpdate(queueName) {
   });
 }
 
+async function getRabbitMQQueueLength(queueName) {
+  let rabbitMQQueueLength = 0;
+  let channel = null;
+  try {
+    // RabbitMQ 채널 생성
+    channel = await fastify.rabbitmq.acquire();
+
+    // 큐 선언 또는 확인 (passive=true 옵션은 생략 가능)
+    const queueInfo = await channel.queueDeclare({
+      queue: queueName,
+      durable: true,
+    });
+
+    // 메시지 수 가져오기
+    rabbitMQQueueLength = queueInfo.messageCount;
+  } catch (err) {
+    if (err.replyCode === 404) {
+      // 큐가 없으면 메시지 수는 0
+      rabbitMQQueueLength = 0;
+    } else {
+      throw err; // 에러를 상위로 전달하여 호출부에서 처리
+    }
+  } finally {
+    if (channel) {
+      // 채널 닫기
+      await channel.close();
+    }
+  }
+  return rabbitMQQueueLength;
+}
+
 async function waitForMessage(queueName) {
   // RabbitMQ 채널 생성
   const channel = await fastify.rabbitmq.acquire();
@@ -328,7 +359,9 @@ io.on("connection", (socket) => {
       const room = io.sockets.adapter.rooms.get(roomName);
       const connectedClientsCount = room ? room.size : 0;
 
-      if (connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
+      const mqLength = await getRabbitMQQueueLength();
+
+      if (mqLength > 0 || connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
         await waitForMessage(queueName); // 큐에서 대기
       }
 
