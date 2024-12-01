@@ -359,7 +359,7 @@ io.on("connection", (socket) => {
       const room = io.sockets.adapter.rooms.get(roomName);
       const connectedClientsCount = room ? room.size : 0;
 
-      const mqLength = await getRabbitMQQueueLength();
+      const mqLength = await getRabbitMQQueueLength(queueName);
 
       if (mqLength > 0 || connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
         await waitForMessage(queueName); // 큐에서 대기
