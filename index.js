@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const MAX_ROOM_CONNECTIONS = 100; // 각 Room의 최대 접속자 수
+
 const schema = {
   type: "object",
   required: [
@@ -304,7 +306,8 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const queueName = `queue:${eventId}_${eventDateId}`;
+    const roomName = `${eventId}_${eventDateId}`;
+    const queueName = `queue:${roomName}`;
 
     // 중복 연결 방지
     const queue = await getQueue(queueName);
@@ -322,25 +325,27 @@ io.on("connection", (socket) => {
     fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
     try {
-      // 큐에서 메시지 가져오기
-      const message = await waitForMessage(queueName);
+      const room = io.sockets.adapter.rooms.get(roomName);
+      const connectedClientsCount = room ? room.size : 0;
 
-      if (message) {
-        const token = jwt.sign(
-          {
-            sub,
-            eventId,
-            eventDateId,
-          },
-          fastify.config.JWT_SECRET_FOR_ENTRANCE,
-          {
-            expiresIn: 600, // 10분
-          }
-        );
-
-        socket.emit("tokenIssued", { token });
-        fastify.log.info(`Token issued to client ${socket.id}`);
+      if (connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
+        await waitForMessage(queueName); // 큐에서 대기
       }
+
+      const token = jwt.sign(
+        {
+          sub,
+          eventId,
+          eventDateId,
+        },
+        fastify.config.JWT_SECRET_FOR_ENTRANCE,
+        {
+          expiresIn: 600, // 10분
+        }
+      );
+
+      socket.emit("tokenIssued", { token });
+      fastify.log.info(`Token issued to client ${socket.id}`);
 
       // 큐에서 제거 및 연결 종료
       await removeClientFromQueue(queueName, socket.id);
