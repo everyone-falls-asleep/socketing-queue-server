@@ -260,6 +260,33 @@ async function broadcastQueueUpdate(queueName) {
   });
 }
 
+async function waitForMessage(queueName) {
+  // RabbitMQ 채널 생성
+  const channel = await fastify.rabbitmq.acquire();
+
+  // 큐가 없으면 선언
+  await channel.queueDeclare({ queue: queueName, durable: true });
+
+  // 메시지 대기
+  return new Promise((resolve, reject) => {
+    try {
+      channel.basicConsume(
+        queueName,
+        (msg) => {
+          if (msg) {
+            channel.basicAck(msg); // 메시지 확인
+            const content = msg.body.toString(); // 메시지 내용 파싱
+            resolve(content); // 메시지를 반환
+          }
+        },
+        { noAck: false } // noAck=false로 메시지 확인 활성화
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
 
@@ -295,22 +322,25 @@ io.on("connection", (socket) => {
     fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
     try {
-      await sleep(4000);
+      // 큐에서 메시지 가져오기
+      const message = await waitForMessage(queueName);
 
-      const token = jwt.sign(
-        {
-          sub,
-          eventId,
-          eventDateId,
-        },
-        fastify.config.JWT_SECRET_FOR_ENTRANCE,
-        {
-          expiresIn: 600,
-        }
-      );
+      if (message) {
+        const token = jwt.sign(
+          {
+            sub,
+            eventId,
+            eventDateId,
+          },
+          fastify.config.JWT_SECRET_FOR_ENTRANCE,
+          {
+            expiresIn: 600, // 10분
+          }
+        );
 
-      socket.emit("tokenIssued", { token });
-      fastify.log.info(`Token issued to client ${socket.id}`);
+        socket.emit("tokenIssued", { token });
+        fastify.log.info(`Token issued to client ${socket.id}`);
+      }
 
       // 큐에서 제거 및 연결 종료
       await removeClientFromQueue(queueName, socket.id);
@@ -342,19 +372,6 @@ io.on("connection", (socket) => {
 const startServer = async () => {
   try {
     const port = Number(fastify.config.PORT);
-
-    try {
-      const queue = "allow_entry_queue";
-      // 서버 시작 전 기본 큐 생성
-      await fastify.rabbitmq.queueDeclare({
-        queue,
-        durable: true, // 메시지를 영구적으로 저장
-      });
-      fastify.log.info(`Default queue "${queue}" declared successfully.`);
-    } catch (err) {
-      fastify.log.error(`Failed to declare default queue "${queue}":`, err);
-    }
-
     const address = await fastify.listen({ port, host: "0.0.0.0" });
 
     fastify.log.info(`Server is now listening on ${address}`);
