@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MAX_ROOM_CONNECTIONS = 100; // 각 Room의 최대 접속자 수
+const MAX_ROOM_CONNECTIONS = 30; // 각 Room의 최대 접속자 수
 
 const schema = {
   type: "object",
@@ -320,6 +320,12 @@ async function waitForMessage(queueName) {
   });
 }
 
+// Redis 기반 유저 수 가져오기 함수
+async function getRoomUserCount(io, roomName) {
+  const sockets = await io.in(roomName).fetchSockets(); // 모든 노드에서 룸에 속한 소켓 ID 가져오기
+  return sockets.length; // 소켓 수 반환
+}
+
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
 
@@ -356,11 +362,12 @@ io.on("connection", (socket) => {
     fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
     try {
-      const room = io.sockets.adapter.rooms.get(roomName);
-      const connectedClientsCount = room ? room.size : 0;
+      const connectedClientsCount = await getRoomUserCount(io, roomName);
 
       const mqLength = await getRabbitMQQueueLength(queueName);
-
+      fastify.log.info(
+        `mqLength: ${mqLength}, connectedClientsCount: ${connectedClientsCount}`
+      );
       if (mqLength > 0 || connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
         await waitForMessage(queueName); // 큐에서 대기
       }
