@@ -184,9 +184,8 @@ const io = new Server(fastify.server, {
     credentials: true,
   },
   transports: ["websocket"],
+  adapter: createAdapter(pubClient, subClient),
 });
-
-io.adapter(createAdapter(pubClient, subClient));
 
 instrument(io, {
   auth: {
@@ -326,8 +325,59 @@ async function getRoomUserCount(io, roomName) {
   return sockets.length; // 소켓 수 반환
 }
 
+async function processQueue(queueName, roomName) {
+  const lockKey = `lock:${queueName}`;
+  const lockTTL = 5000; // 락 유효 시간 (밀리초)
+  const lockValue = `${process.pid}-${Date.now()}`;
+
+  // 분산 락 획득 시도
+  const lockAcquired = await fastify.redis.set(
+    lockKey,
+    lockValue,
+    "NX",
+    "PX",
+    lockTTL
+  );
+
+  if (!lockAcquired) {
+    // 다른 노드에서 처리 중이므로 종료
+    fastify.log.info("Processing on another node, terminating.");
+    return;
+  }
+
+  try {
+    const queue = await getQueue(queueName);
+    let connectedClientsCount = await getRoomUserCount(io, roomName);
+
+    if (connectedClientsCount < MAX_ROOM_CONNECTIONS && queue.length > 0) {
+      const firstClientId = queue[0];
+
+      // 클라이언트에게 순번 도래 알림
+      await pubClient.publish(`notify:${queueName}`, firstClientId);
+
+      fastify.log.info(`Notified client ${firstClientId} it's their turn.`);
+
+      // 큐에서 제거 및 접속자 수 증가
+      await removeClientFromQueue(queueName, firstClientId);
+      connectedClientsCount++;
+
+      // 업데이트된 큐 및 접속자 수 재확인
+      await broadcastQueueUpdate(queueName);
+    }
+  } finally {
+    // 락 해제 (자신이 획득한 락인지 확인 후 해제)
+    const currentLockValue = await fastify.redis.get(lockKey);
+    if (currentLockValue === lockValue) {
+      await fastify.redis.del(lockKey);
+    }
+  }
+}
+
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
+
+  const clientSub = fastify.redis.duplicate();
+  let clientSubQuit = false;
 
   socket.on("joinQueue", async ({ eventId, eventDateId }) => {
     if (!eventId || !eventDateId) {
@@ -362,15 +412,25 @@ io.on("connection", (socket) => {
     fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
     try {
-      const connectedClientsCount = await getRoomUserCount(io, roomName);
+      // 클라이언트는 자신의 순번이 도래할 때까지 대기
+      const waitForTurn = new Promise((resolve) => {
+        const messageHandler = async (channel, message) => {
+          if (channel === `notify:${queueName}` && message === socket.id) {
+            resolve();
+            clientSub.removeListener("message", messageHandler);
+            clientSub.unsubscribe(`notify:${queueName}`);
+            await quitClientSub();
+          }
+        };
+        clientSub.on("message", messageHandler);
+        clientSub.subscribe(`notify:${queueName}`);
+      });
 
-      const mqLength = await getRabbitMQQueueLength(queueName);
-      fastify.log.info(
-        `mqLength: ${mqLength}, connectedClientsCount: ${connectedClientsCount}`
-      );
-      if (mqLength > 0 || connectedClientsCount >= MAX_ROOM_CONNECTIONS) {
-        await waitForMessage(queueName); // 큐에서 대기
-      }
+      // 큐 처리 시도
+      await processQueue(queueName, roomName);
+
+      // 순번 대기
+      await waitForTurn;
 
       const token = jwt.sign(
         {
@@ -391,27 +451,52 @@ io.on("connection", (socket) => {
       await removeClientFromQueue(queueName, socket.id);
       await broadcastQueueUpdate(queueName);
 
+      // 다음 클라이언트 처리
+      await processQueue(queueName, roomName);
+
       socket.disconnect(true);
     } catch (err) {
       fastify.log.error(
         `Error processing queue for ${socket.id}: ${err.message}`
       );
       socket.emit("error", { message: "Internal server error." });
+      await quitClientSub();
       socket.disconnect(true);
     }
   });
 
   socket.on("disconnect", async () => {
+    await quitClientSub();
     const keys = await scanForKeys("queue:*");
-    for (const queueName of keys) {
+    for (const roomName of keys) {
+      const queueName = `${roomName}`;
       const queue = await getQueue(queueName);
       if (queue.includes(socket.id)) {
         await removeClientFromQueue(queueName, socket.id);
         await broadcastQueueUpdate(queueName);
+        await processQueue(queueName, roomName);
         break;
       }
     }
   });
+
+  async function quitClientSub() {
+    if (!clientSubQuit) {
+      clientSubQuit = true;
+      try {
+        await clientSub.quit();
+      } catch (err) {
+        fastify.log.error(`Error quitting clientSub: ${err.message}`);
+      }
+    }
+  }
+});
+
+io.on("leave-room", async ({ room, id }) => {
+  console.log(`Socket ${id} has left room ${room}`);
+  if (room != id) {
+    await processQueue(`queue:${room}`, room);
+  }
 });
 
 const startServer = async () => {
