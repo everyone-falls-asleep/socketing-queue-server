@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MAX_ROOM_CONNECTIONS = 30; // 각 Room의 최대 접속자 수
+const MAX_ROOM_CONNECTIONS = 50; // 각 Room의 최대 접속자 수
 
 const schema = {
   type: "object",
