@@ -249,9 +249,7 @@ async function getQueue(queueName) {
 
 async function broadcastQueueUpdate(queueName) {
   const queue = await getQueue(queueName);
-
-  const socketsInRoom = await io.in(queueName).fetchSockets();
-
+  const socketsInRoom = await getSocketsInRoom(queueName);
   socketsInRoom.forEach((socket) => {
     const position = queue.indexOf(socket.id) + 1;
     socket.emit("updateQueue", {
@@ -319,10 +317,13 @@ async function waitForMessage(queueName) {
   });
 }
 
-// Redis 기반 유저 수 가져오기 함수
-async function getRoomUserCount(io, roomName) {
-  const sockets = await io.in(roomName).fetchSockets(); // 모든 노드에서 룸에 속한 소켓 ID 가져오기
-  return sockets.length; // 소켓 수 반환
+async function getRoomUserCount(roomName) {
+  const sockets = await io.in(roomName).fetchSockets();
+  return sockets.length;
+}
+
+async function getSocketsInRoom(queueName) {
+  return await io.in(queueName).fetchSockets();
 }
 
 async function processQueue(queueName, roomName) {
@@ -347,7 +348,7 @@ async function processQueue(queueName, roomName) {
 
   try {
     const queue = await getQueue(queueName);
-    let connectedClientsCount = await getRoomUserCount(io, roomName);
+    const connectedClientsCount = await getRoomUserCount(roomName);
 
     if (connectedClientsCount < MAX_ROOM_CONNECTIONS && queue.length > 0) {
       const firstClientId = queue[0];
@@ -359,7 +360,6 @@ async function processQueue(queueName, roomName) {
 
       // 큐에서 제거 및 접속자 수 증가
       await removeClientFromQueue(queueName, firstClientId);
-      connectedClientsCount++;
 
       // 업데이트된 큐 및 접속자 수 재확인
       await broadcastQueueUpdate(queueName);
