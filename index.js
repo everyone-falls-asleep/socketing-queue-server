@@ -404,24 +404,24 @@ async function popFirstClientOfQueue(queueName) {
 }
 
 async function processQueue(queueName) {
-  const lockKey = `lock:${queueName}`;
-  const lockTTL = 5000; // 락 유효 시간 (밀리초)
-  const lockValue = `${process.pid}-${Date.now()}`;
+  // const lockKey = `lock:${queueName}`;
+  // const lockTTL = 5000; // 락 유효 시간 (밀리초)
+  // const lockValue = `${process.pid}-${Date.now()}`;
 
   // 분산 락 획득 시도
-  const lockAcquired = await fastify.redis.set(
-    lockKey,
-    lockValue,
-    "NX",
-    "PX",
-    lockTTL
-  );
+  // const lockAcquired = await fastify.redis.set(
+  //   lockKey,
+  //   lockValue,
+  //   "NX",
+  //   "PX",
+  //   lockTTL
+  // );
 
-  if (!lockAcquired) {
-    // 다른 노드에서 처리 중이므로 종료
-    fastify.log.info("Processing on another node, terminating.");
-    return;
-  }
+  // if (!lockAcquired) {
+  //   // 다른 노드에서 처리 중이므로 종료
+  //   fastify.log.info("Processing on another node, terminating.");
+  //   return;
+  // }
 
   try {
     const connectedClientsCount = await getQueueLength(queueName);
@@ -452,10 +452,10 @@ async function processQueue(queueName) {
     }
   } finally {
     // 락 해제 (자신이 획득한 락인지 확인 후 해제)
-    const currentLockValue = await fastify.redis.get(lockKey);
-    if (currentLockValue === lockValue) {
-      await fastify.redis.del(lockKey);
-    }
+    // const currentLockValue = await fastify.redis.get(lockKey);
+    // if (currentLockValue === lockValue) {
+    //   await fastify.redis.del(lockKey);
+    // }
   }
 }
 
@@ -498,7 +498,7 @@ async function consumeStream() {
         "COUNT",
         10,
         "BLOCK",
-        5000, // 5 seconds
+        1000, // 1 seconds
         "STREAMS",
         STREAM_KEY,
         ">"
