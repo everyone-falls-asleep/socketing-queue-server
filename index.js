@@ -363,6 +363,15 @@ async function getFirstClientOfQueue(queueName) {
   }
 }
 
+async function popFirstClientOfQueue(queueName) {
+  try {
+    return await fastify.redis.lpop(queueName);
+  } catch (err) {
+    console.error("Redis error:", err);
+    return null;
+  }
+}
+
 async function processQueue(queueName, roomName) {
   const lockKey = `lock:${queueName}`;
   const lockTTL = 5000; // 락 유효 시간 (밀리초)
@@ -390,15 +399,12 @@ async function processQueue(queueName, roomName) {
       connectedClientsCount < MAX_ROOM_CONNECTIONS &&
       connectedClientsCount > 0
     ) {
-      const firstClientId = await getFirstClientOfQueue(queueName);
+      const firstClientId = await popFirstClientOfQueue(queueName);
 
       // 클라이언트에게 순번 도래 알림
       await pubClient.publish(`notify:${queueName}`, firstClientId);
 
       fastify.log.info(`Notified client ${firstClientId} it's their turn.`);
-
-      // 큐에서 제거 및 접속자 수 증가
-      await removeClientFromQueue(queueName, firstClientId);
 
       // 업데이트된 큐 및 접속자 수 재확인
       await broadcastQueueUpdate(queueName);
