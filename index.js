@@ -448,14 +448,21 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // 큐에 유저 추가
-    await addClientToQueue(queueName, socket.id);
-    socket.join(queueName);
-    await broadcastQueueUpdate(queueName);
-
-    fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
+    const subscribeToQueue = (clientSub, queueName) => {
+      return new Promise((resolve, reject) => {
+        clientSub.subscribe(`notify:${queueName}`, (err) => {
+          if (err) {
+            return reject(err);
+          }
+          resolve();
+        });
+      });
+    };
 
     try {
+      // notify 이벤트 구독
+      await subscribeToQueue(clientSub, queueName);
+
       // 클라이언트는 자신의 순번이 도래할 때까지 대기
       const waitForTurn = new Promise((resolve) => {
         const messageHandler = async (channel, message) => {
@@ -467,8 +474,14 @@ io.on("connection", (socket) => {
           }
         };
         clientSub.on("message", messageHandler);
-        clientSub.subscribe(`notify:${queueName}`);
       });
+
+      // 큐에 유저 추가
+      await addClientToQueue(queueName, socket.id);
+      socket.join(queueName);
+      await broadcastQueueUpdate(queueName);
+
+      fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
       // 큐 처리 시도
       await processQueue(queueName, roomName);
