@@ -543,6 +543,7 @@ io.on("connection", (socket) => {
       // 큐에 유저 추가
       await addClientToQueue(queueName, socket.id, sub);
       socket.join(queueName);
+      await broadcastQueueUpdate(queueName);
 
       fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
