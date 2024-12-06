@@ -491,10 +491,6 @@ io.on("connection", (socket) => {
       socket.emit("tokenIssued", { token });
       fastify.log.info(`Token issued to client ${socket.id}`);
 
-      // 큐에서 제거 및 연결 종료
-      await removeClientFromQueue(queueName, socket.id);
-      await broadcastQueueUpdate(queueName);
-
       // 다음 클라이언트 처리
       await processQueue(queueName, roomName);
 
