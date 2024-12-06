@@ -237,10 +237,6 @@ async function addClientToQueue(queueName, socketId) {
 
 async function removeClientFromQueue(queueName, socketId) {
   await fastify.redis.lrem(queueName, 0, socketId);
-  const queueLength = await fastify.redis.llen(queueName);
-  if (queueLength === 0) {
-    await fastify.redis.del(queueName); // 큐가 비어 있으면 삭제
-  }
 }
 
 async function getQueue(queueName) {
@@ -326,6 +322,47 @@ async function getSocketsInRoom(queueName) {
   return await io.in(queueName).fetchSockets();
 }
 
+async function getQueueLength(queueName) {
+  try {
+    return await fastify.redis.llen(queueName);
+  } catch (err) {
+    console.error("Redis error:", err);
+    return -1;
+  }
+}
+
+async function findIndexInQueue(queueName, valueToFind) {
+  const script = `
+    local queue = redis.call('LRANGE', KEYS[1], 0, -1)
+    local valueToFind = ARGV[1]
+
+    for i, v in ipairs(queue) do
+      if v == valueToFind then
+        return i - 1 -- Convert to 0-based index
+      end
+    end
+
+    return -1 -- Not found
+  `;
+
+  try {
+    const index = await fastify.redis.eval(script, 1, queueName, valueToFind);
+    return index;
+  } catch (err) {
+    console.error("Redis error:", err);
+    return -1;
+  }
+}
+
+async function getFirstClientOfQueue(queueName) {
+  try {
+    return await fastify.redis.lindex(queueName, 0);
+  } catch (err) {
+    console.error("Redis error:", err);
+    return null;
+  }
+}
+
 async function processQueue(queueName, roomName) {
   const lockKey = `lock:${queueName}`;
   const lockTTL = 5000; // 락 유효 시간 (밀리초)
@@ -347,11 +384,13 @@ async function processQueue(queueName, roomName) {
   }
 
   try {
-    const queue = await getQueue(queueName);
-    const connectedClientsCount = await getRoomUserCount(roomName);
+    const connectedClientsCount = await getQueueLength(queueName);
 
-    if (connectedClientsCount < MAX_ROOM_CONNECTIONS && queue.length > 0) {
-      const firstClientId = queue[0];
+    if (
+      connectedClientsCount < MAX_ROOM_CONNECTIONS &&
+      connectedClientsCount > 0
+    ) {
+      const firstClientId = await getFirstClientOfQueue(queueName);
 
       // 클라이언트에게 순번 도래 알림
       await pubClient.publish(`notify:${queueName}`, firstClientId);
@@ -397,8 +436,7 @@ io.on("connection", (socket) => {
     const queueName = `queue:${roomName}`;
 
     // 중복 연결 방지
-    const queue = await getQueue(queueName);
-    if (queue.includes(socket.id)) {
+    if ((await findIndexInQueue(queueName, socket.id)) != -1) {
       socket.emit("error", { message: "Already in the queue." });
       socket.disconnect(true);
       return;
@@ -470,8 +508,7 @@ io.on("connection", (socket) => {
     const keys = await scanForKeys("queue:*");
     for (const roomName of keys) {
       const queueName = `${roomName}`;
-      const queue = await getQueue(queueName);
-      if (queue.includes(socket.id)) {
+      if ((await findIndexInQueue(queueName, socket.id)) != -1) {
         await removeClientFromQueue(queueName, socket.id);
         await broadcastQueueUpdate(queueName);
         await processQueue(queueName, roomName);
