@@ -432,10 +432,15 @@ async function processQueue(queueName) {
     ) {
       const firstClient = await popFirstClientOfQueue(queueName);
 
-      // 클라이언트에게 순번 도래 알림
-      await pubClient.publish(
-        `notify:${queueName}`,
-        JSON.stringify(firstClient)
+      const [eventId, eventDateId] = queueName.split(":")[1].split("_");
+
+      await fastify.redis.xadd(
+        STREAM_KEY,
+        "*",
+        firstClient.socketId,
+        firstClient.userId,
+        eventId,
+        eventDateId
       );
 
       fastify.log.info(
@@ -454,46 +459,142 @@ async function processQueue(queueName) {
   }
 }
 
-subClient.psubscribe("notify:*", (err, count) => {
-  if (err) {
-    console.error("Failed to subscribe to pattern:", err);
-  } else {
-    console.log(`Successfully subscribed to ${count} pattern(s).`);
+const STREAM_KEY = "queue-messages";
+const CONSUMER_GROUP = "queue-group";
+const CONSUMER_NAME = `consumer-${process.pid}`; // Unique consumer name per instance
+
+// Initialize the consumer group
+async function initializeStream() {
+  try {
+    // Create consumer group if it doesn't exist
+    await fastify.redis.xgroup(
+      "CREATE",
+      STREAM_KEY,
+      CONSUMER_GROUP,
+      "0",
+      "MKSTREAM"
+    );
+    fastify.log.info(
+      `Consumer group '${CONSUMER_GROUP}' created or already exists.`
+    );
+  } catch (err) {
+    if (err.message.includes("BUSYGROUP")) {
+      fastify.log.info(`Consumer group '${CONSUMER_GROUP}' already exists.`);
+    } else {
+      fastify.log.error("Error creating consumer group:", err);
+      process.exit(1);
+    }
   }
-});
+}
 
-subClient.on("pmessage", async (pattern, channel, message) => {
-  if (pattern === "notify:*") {
-    const queueName = channel.split("notify:")[1];
-    const [eventId, eventDateId] = queueName.split(":")[1].split("_");
-    const client = JSON.parse(message);
+// Function to read messages from the stream
+async function consumeStream() {
+  while (true) {
+    try {
+      const response = await fastify.redis.xreadgroup(
+        "GROUP",
+        CONSUMER_GROUP,
+        CONSUMER_NAME,
+        "COUNT",
+        10,
+        "BLOCK",
+        5000, // 5 seconds
+        "STREAMS",
+        STREAM_KEY,
+        ">"
+      );
 
-    const token = jwt.sign(
-      {
-        sub: client.userId,
-        eventId,
-        eventDateId,
-      },
-      fastify.config.JWT_SECRET_FOR_ENTRANCE,
-      {
-        expiresIn: 600, // 10분
+      if (response) {
+        const [stream, messages] = response[0];
+        // console.log(messages);
+        for (const [id, fields] of messages) {
+          const socketId = fields[0];
+          const userId = fields[1];
+          const eventId = fields[2];
+          const eventDateId = fields[3];
+
+          const queueName = `queue:${eventId}_${eventDateId}`;
+
+          const token = jwt.sign(
+            {
+              sub: userId,
+              eventId,
+              eventDateId,
+            },
+            fastify.config.JWT_SECRET_FOR_ENTRANCE,
+            {
+              expiresIn: 600, // 10분
+            }
+          );
+
+          io.to(socketId).emit("tokenIssued", { token });
+          fastify.log.info(`Token issued to client ${socketId}`);
+
+          await processQueue(queueName);
+          io.of("/").adapter.disconnectSockets(
+            {
+              rooms: new Set([socketId]),
+              except: new Set(),
+            }, // 필터링 기준
+            true // underlying connection 닫기
+          );
+          console.log(`Socket with ID ${socketId} has been disconnected.`);
+
+          // Acknowledge the message
+          await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
+        }
       }
-    );
-
-    io.to(client.socketId).emit("tokenIssued", { token });
-    fastify.log.info(`Token issued to client ${client.socketId}`);
-
-    await processQueue(queueName);
-    io.of("/").adapter.disconnectSockets(
-      {
-        rooms: new Set([client.socketId]),
-        except: new Set(),
-      }, // 필터링 기준
-      true // underlying connection 닫기
-    );
-    console.log(`Socket with ID ${client.socketId} has been disconnected.`);
+    } catch (err) {
+      fastify.log.error("Error consuming stream:", err);
+      // Optional: Implement retry logic or exit
+    }
   }
-});
+}
+
+// Start consuming the stream
+await initializeStream();
+consumeStream(); // Note: Not awaiting to allow it to run concurrently
+
+// subClient.psubscribe("notify:*", (err, count) => {
+//   if (err) {
+//     console.error("Failed to subscribe to pattern:", err);
+//   } else {
+//     console.log(`Successfully subscribed to ${count} pattern(s).`);
+//   }
+// });
+
+// subClient.on("pmessage", async (pattern, channel, message) => {
+//   if (pattern === "notify:*") {
+//     const queueName = channel.split("notify:")[1];
+//     const [eventId, eventDateId] = queueName.split(":")[1].split("_");
+//     const client = JSON.parse(message);
+
+//     const token = jwt.sign(
+//       {
+//         sub: client.userId,
+//         eventId,
+//         eventDateId,
+//       },
+//       fastify.config.JWT_SECRET_FOR_ENTRANCE,
+//       {
+//         expiresIn: 600, // 10분
+//       }
+//     );
+
+//     io.to(client.socketId).emit("tokenIssued", { token });
+//     fastify.log.info(`Token issued to client ${client.socketId}`);
+
+//     await processQueue(queueName);
+//     io.of("/").adapter.disconnectSockets(
+//       {
+//         rooms: new Set([client.socketId]),
+//         except: new Set(),
+//       }, // 필터링 기준
+//       true // underlying connection 닫기
+//     );
+//     console.log(`Socket with ID ${client.socketId} has been disconnected.`);
+//   }
+// });
 
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
