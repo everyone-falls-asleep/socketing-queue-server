@@ -238,7 +238,7 @@ async function addClientToQueue(queueName, socketId, userId) {
 
 async function removeClientFromQueue(queueName, socketId, userId) {
   const obj = { socketId, userId };
-  await fastify.redis.lrem(queueName, 0, JSON.stringify(obj));
+  return await fastify.redis.lrem(queueName, 0, JSON.stringify(obj)); // 삭제된 요소의 개수 반환
 }
 
 async function getQueue(queueName) {
@@ -560,10 +560,8 @@ io.on("connection", (socket) => {
   socket.on("disconnect", async () => {
     const sub = socket.data.user?.sub;
     const keys = await scanForKeys("queue:*");
-    for (const roomName of keys) {
-      const queueName = `${roomName}`;
-      if ((await findIndexInQueue(queueName, socket.id)) != -1) {
-        await removeClientFromQueue(queueName, socket.id, sub);
+    for (const queueName of keys) {
+      if ((await removeClientFromQueue(queueName, socket.id, sub)) > 0) {
         await broadcastQueueUpdate(queueName);
         const [eventId, eventDateId] = queueName.split(":")[1].split("_");
         await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
