@@ -403,14 +403,13 @@ async function popFirstClientOfQueue(queueName) {
   }
 }
 
-async function getAndPopIfNeeded(queueName, maxConnections) {
+async function getAndPopIfNeeded(queueName) {
   const luaScript = `
     local queueName = KEYS[1]
-    local maxConnections = tonumber(ARGV[1])
 
     local queueLength = redis.call('LLEN', queueName)
 
-    if queueLength > 0 and queueLength < maxConnections then
+    if queueLength > 0 then
         local firstClient = redis.call('LPOP', queueName)
         return {queueLength, firstClient}
     else
@@ -419,12 +418,7 @@ async function getAndPopIfNeeded(queueName, maxConnections) {
   `;
 
   try {
-    const result = await fastify.redis.eval(
-      luaScript,
-      1,
-      queueName,
-      maxConnections
-    );
+    const result = await fastify.redis.eval(luaScript, 1, queueName);
 
     if (result) {
       const [queueLength, firstClient] = result;
@@ -490,50 +484,53 @@ async function consumeStream() {
         for (const [id, fields] of messages) {
           const eventId = fields[0];
           const eventDateId = fields[1];
-          const queueName = `queue:${eventId}_${eventDateId}`;
+          const roomName = `${eventId}_${eventDateId}`;
+          const queueName = `queue:${roomName}`;
 
-          const result = await getAndPopIfNeeded(
-            queueName,
-            MAX_ROOM_CONNECTIONS
-          );
+          const connectedClientsCount = await getRoomUserCount(roomName);
 
-          if (result) {
-            const { queueLength, firstClient } = result;
+          if (connectedClientsCount < MAX_ROOM_CONNECTIONS) {
+            const result = await getAndPopIfNeeded(queueName);
 
-            fastify.log.info(
-              `Notified client ${firstClient.socketId} it's their turn.`
-            );
+            if (result) {
+              const { queueLength, firstClient } = result;
 
-            const token = jwt.sign(
-              {
-                sub: firstClient.userId,
-                eventId,
-                eventDateId,
-              },
-              fastify.config.JWT_SECRET_FOR_ENTRANCE,
-              {
-                expiresIn: 600, // 10분
-              }
-            );
+              fastify.log.info(
+                `Notified client ${firstClient.socketId} it's their turn.`
+              );
 
-            io.to(firstClient.socketId).emit("tokenIssued", { token });
-            fastify.log.info(`Token issued to client ${firstClient.socketId}`);
+              const token = jwt.sign(
+                {
+                  sub: firstClient.userId,
+                  eventId,
+                  eventDateId,
+                },
+                fastify.config.JWT_SECRET_FOR_ENTRANCE,
+                {
+                  expiresIn: 600, // 10분
+                }
+              );
 
-            io.of("/").adapter.disconnectSockets(
-              {
-                rooms: new Set([firstClient.socketId]),
-                except: new Set(),
-              }, // 필터링 기준
-              true // underlying connection 닫기
-            );
-            console.log(
-              `Socket with ID ${firstClient.socketId} has been disconnected.`
-            );
+              io.to(firstClient.socketId).emit("tokenIssued", { token });
+              fastify.log.info(
+                `Token issued to client ${firstClient.socketId}`
+              );
 
-            // Acknowledge the message
-            await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
+              io.of("/").adapter.disconnectSockets(
+                {
+                  rooms: new Set([firstClient.socketId]),
+                  except: new Set(),
+                }, // 필터링 기준
+                true // underlying connection 닫기
+              );
+              console.log(
+                `Socket with ID ${firstClient.socketId} has been disconnected.`
+              );
+
+              // Acknowledge the message
+              await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
+            }
           }
-
           // 업데이트된 큐 및 접속자 수 재확인
           await broadcastQueueUpdate(queueName);
         }
