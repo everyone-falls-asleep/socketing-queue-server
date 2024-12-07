@@ -403,6 +403,43 @@ async function popFirstClientOfQueue(queueName) {
   }
 }
 
+async function getAndPopIfNeeded(queueName, maxConnections) {
+  const luaScript = `
+    local queueName = KEYS[1]
+    local maxConnections = tonumber(ARGV[1])
+
+    local queueLength = redis.call('LLEN', queueName)
+
+    if queueLength > 0 and queueLength < maxConnections then
+        local firstClient = redis.call('LPOP', queueName)
+        return {queueLength, firstClient}
+    else
+        return nil
+    end
+  `;
+
+  try {
+    const result = await fastify.redis.eval(
+      luaScript,
+      1,
+      queueName,
+      maxConnections
+    );
+
+    if (result) {
+      const [queueLength, firstClient] = result;
+      return {
+        queueLength,
+        firstClient: firstClient ? JSON.parse(firstClient) : null,
+      };
+    } else {
+      return null; // No client was popped
+    }
+  } catch (error) {
+    throw new Error(`Error in getAndPopIfNeeded: ${error.message}`);
+  }
+}
+
 const STREAM_KEY = "queue-messages";
 const CONSUMER_GROUP = "queue-group";
 const CONSUMER_NAME = `consumer-${process.pid}`; // Unique consumer name per instance
@@ -455,13 +492,13 @@ async function consumeStream() {
           const eventDateId = fields[1];
           const queueName = `queue:${eventId}_${eventDateId}`;
 
-          const connectedClientsCount = await getQueueLength(queueName);
+          const result = await getAndPopIfNeeded(
+            queueName,
+            MAX_ROOM_CONNECTIONS
+          );
 
-          if (
-            connectedClientsCount < MAX_ROOM_CONNECTIONS &&
-            connectedClientsCount > 0
-          ) {
-            const firstClient = await popFirstClientOfQueue(queueName);
+          if (result) {
+            const { queueLength, firstClient } = result;
 
             fastify.log.info(
               `Notified client ${firstClient.socketId} it's their turn.`
