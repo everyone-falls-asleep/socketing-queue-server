@@ -434,8 +434,9 @@ async function getAndPopIfNeeded(queueName) {
   }
 }
 
-async function issueToken(firstClient, roomName) {
+async function issueToken(firstClient, eventId, eventDateId) {
   const TOKEN_TTL = 10;
+  const roomName = `${eventId}_${eventDateId}`;
 
   const token = jwt.sign(
     {
@@ -536,7 +537,7 @@ async function consumeStream() {
                 `Notified client ${firstClient.socketId} it's their turn.`
               );
 
-              const token = await issueToken(firstClient, roomName);
+              const token = await issueToken(firstClient, eventId, eventDateId);
 
               io.to(firstClient.socketId).emit("tokenIssued", { token });
               fastify.log.info(
