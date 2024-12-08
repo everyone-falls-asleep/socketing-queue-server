@@ -11,6 +11,7 @@ import jwt from "jsonwebtoken";
 import { instrument } from "@socket.io/admin-ui";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import crypto from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -440,6 +441,7 @@ async function issueToken(firstClient, eventId, eventDateId) {
 
   const token = jwt.sign(
     {
+      jti: crypto.randomUUID(),
       sub: firstClient.userId,
       eventId,
       eventDateId,
