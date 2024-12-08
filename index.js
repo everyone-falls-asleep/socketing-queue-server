@@ -434,6 +434,37 @@ async function getAndPopIfNeeded(queueName) {
   }
 }
 
+async function issueToken(roomName) {
+  const TOKEN_TTL = 10;
+
+  const token = jwt.sign(
+    {
+      sub: firstClient.userId,
+      eventId,
+      eventDateId,
+    },
+    fastify.config.JWT_SECRET_FOR_ENTRANCE,
+    {
+      expiresIn: 600, // 10분
+    }
+  );
+
+  await fastify.redis.sadd(`issued_tokens:${roomName}`, token);
+  await fastify.redis.setex(`token:${token}`, TOKEN_TTL, "issued");
+
+  return token;
+}
+
+async function cleanupExpiredTokens(roomName) {
+  const tokens = await fastify.redis.smembers(`issued_tokens:${roomName}`);
+  for (const token of tokens) {
+    const ttl = await fastify.redis.ttl(`token:${token}`);
+    if (ttl === -2) {
+      await fastify.redis.srem(`issued_tokens:${roomName}`, token);
+    }
+  }
+}
+
 const STREAM_KEY = "queue-messages";
 const CONSUMER_GROUP = "queue-group";
 const CONSUMER_NAME = `consumer-${process.pid}`; // Unique consumer name per instance
@@ -487,9 +518,15 @@ async function consumeStream() {
           const roomName = `${eventId}_${eventDateId}`;
           const queueName = `queue:${roomName}`;
 
+          await cleanupExpiredTokens(roomName);
+
+          const issuedTokenCount = await fastify.redis.scard(
+            `issued_tokens:${roomName}`
+          );
+
           const connectedClientsCount = await getRoomUserCount(roomName);
 
-          if (connectedClientsCount < MAX_ROOM_CONNECTIONS) {
+          if (issuedTokenCount + connectedClientsCount < MAX_ROOM_CONNECTIONS) {
             const result = await getAndPopIfNeeded(queueName);
 
             if (result) {
@@ -499,17 +536,7 @@ async function consumeStream() {
                 `Notified client ${firstClient.socketId} it's their turn.`
               );
 
-              const token = jwt.sign(
-                {
-                  sub: firstClient.userId,
-                  eventId,
-                  eventDateId,
-                },
-                fastify.config.JWT_SECRET_FOR_ENTRANCE,
-                {
-                  expiresIn: 600, // 10분
-                }
-              );
+              const token = await issueToken();
 
               io.to(firstClient.socketId).emit("tokenIssued", { token });
               fastify.log.info(
