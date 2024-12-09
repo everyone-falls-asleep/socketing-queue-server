@@ -16,8 +16,6 @@ import crypto from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MAX_ROOM_CONNECTIONS = 100; // 각 Room의 최대 접속자 수
-
 const schema = {
   type: "object",
   required: [
@@ -28,6 +26,7 @@ const schema = {
     "CACHE_PORT",
     "DB_URL",
     "MQ_URL",
+    "MAX_ROOM_CONNECTIONS",
   ],
   properties: {
     PORT: {
@@ -50,6 +49,9 @@ const schema = {
     },
     MQ_URL: {
       type: "string",
+    },
+    MAX_ROOM_CONNECTIONS: {
+      type: "integer",
     },
   },
 };
@@ -529,7 +531,10 @@ async function consumeStream() {
 
           const connectedClientsCount = await getRoomUserCount(roomName);
 
-          if (issuedTokenCount + connectedClientsCount < MAX_ROOM_CONNECTIONS) {
+          if (
+            issuedTokenCount + connectedClientsCount <
+            fastify.config.MAX_ROOM_CONNECTIONS
+          ) {
             const result = await getAndPopIfNeeded(queueName);
 
             if (result) {
