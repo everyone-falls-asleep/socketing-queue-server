@@ -523,51 +523,59 @@ async function consumeStream() {
           const roomName = `${eventId}_${eventDateId}`;
           const queueName = `queue:${roomName}`;
 
-          await cleanupExpiredTokens(roomName);
+          try {
+            await cleanupExpiredTokens(roomName);
 
-          const issuedTokenCount = await fastify.redis.scard(
-            `issued_tokens:${roomName}`
-          );
+            const issuedTokenCount = await fastify.redis.scard(
+              `issued_tokens:${roomName}`
+            );
 
-          const connectedClientsCount = await getRoomUserCount(roomName);
+            const connectedClientsCount = await getRoomUserCount(roomName);
 
-          if (
-            issuedTokenCount + connectedClientsCount <
-            fastify.config.MAX_ROOM_CONNECTIONS
-          ) {
-            const result = await getAndPopIfNeeded(queueName);
+            if (
+              issuedTokenCount + connectedClientsCount <
+              fastify.config.MAX_ROOM_CONNECTIONS
+            ) {
+              const result = await getAndPopIfNeeded(queueName);
 
-            if (result) {
-              const { queueLength, firstClient } = result;
+              if (result) {
+                const { queueLength, firstClient } = result;
 
-              fastify.log.info(
-                `Notified client ${firstClient.socketId} it's their turn.`
-              );
+                fastify.log.info(
+                  `Notified client ${firstClient.socketId} it's their turn.`
+                );
 
-              const token = await issueToken(firstClient, eventId, eventDateId);
+                const token = await issueToken(
+                  firstClient,
+                  eventId,
+                  eventDateId
+                );
 
-              io.to(firstClient.socketId).emit("tokenIssued", { token });
-              fastify.log.info(
-                `Token issued to client ${firstClient.socketId}`
-              );
+                io.to(firstClient.socketId).emit("tokenIssued", { token });
+                fastify.log.info(
+                  `Token issued to client ${firstClient.socketId}`
+                );
 
-              io.of("/").adapter.disconnectSockets(
-                {
-                  rooms: new Set([firstClient.socketId]),
-                  except: new Set(),
-                }, // 필터링 기준
-                true // underlying connection 닫기
-              );
-              console.log(
-                `Socket with ID ${firstClient.socketId} has been disconnected.`
-              );
+                io.of("/").adapter.disconnectSockets(
+                  {
+                    rooms: new Set([firstClient.socketId]),
+                    except: new Set(),
+                  }, // 필터링 기준
+                  true // underlying connection 닫기
+                );
+                console.log(
+                  `Socket with ID ${firstClient.socketId} has been disconnected.`
+                );
 
-              // Acknowledge the message
-              await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
+                // Acknowledge the message
+                await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
+              }
             }
+            // 업데이트된 큐 및 접속자 수 재확인
+            await broadcastQueueUpdate(queueName);
+          } catch (err) {
+            console.error(err);
           }
-          // 업데이트된 큐 및 접속자 수 재확인
-          await broadcastQueueUpdate(queueName);
         }
       }
     } catch (err) {
