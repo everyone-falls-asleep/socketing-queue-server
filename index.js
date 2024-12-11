@@ -344,7 +344,7 @@ async function getRoomUserCount(roomName) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const res = await fastify.redis.get(`room:${roomName}:count`);
-      return res || 0;
+      return parseInt(res || "0");
     } catch (err) {
       console.error(
         `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`
