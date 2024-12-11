@@ -617,6 +617,31 @@ io.on("connection", (socket) => {
       fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
       await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+
+      const jwtToken = jwt.sign(
+        {
+          jti: crypto.randomUUID(),
+          sub: "scheduling-reservation-status",
+          eventId,
+          eventDateId,
+        },
+        fastify.config.JWT_SECRET,
+        {
+          expiresIn: 600, // 10분
+        }
+      );
+
+      await fetch("https://socketing.hjyoon.me/scheduling/reservation/status", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${jwtToken}`, // JWT 토큰 추가
+        },
+        body: JSON.stringify({
+          eventId,
+          eventDateId,
+        }),
+      });
     } catch (err) {
       fastify.log.error(
         `Error processing queue for ${socket.id}: ${err.message}`
