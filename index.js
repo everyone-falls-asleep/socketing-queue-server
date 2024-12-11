@@ -328,13 +328,51 @@ async function waitForMessage(queueName) {
   });
 }
 
+function decorrelatedJitter(baseDelay, maxDelay, previousDelay) {
+  if (!previousDelay) {
+    previousDelay = baseDelay;
+  }
+  return Math.min(
+    maxDelay,
+    Math.random() * (previousDelay * 3 - baseDelay) + baseDelay
+  );
+}
+
 async function getRoomUserCount(roomName) {
-  const sockets = await io.in(roomName).fetchSockets();
-  return sockets.length;
+  const maxRetries = 30;
+  let delay = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const sockets = await io.in(roomName).fetchSockets();
+      return sockets.length;
+    } catch (err) {
+      console.error(
+        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`
+      );
+      await new Promise((resolve) => {
+        delay = decorrelatedJitter(100, 60000, delay);
+        setTimeout(resolve, delay);
+      });
+    }
+  }
 }
 
 async function getSocketsInRoom(queueName) {
-  return await io.in(queueName).fetchSockets();
+  const maxRetries = 30;
+  let delay = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await io.in(queueName).fetchSockets();
+    } catch (err) {
+      console.error(
+        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`
+      );
+      await new Promise((resolve) => {
+        delay = decorrelatedJitter(100, 60000, delay);
+        setTimeout(resolve, delay);
+      });
+    }
+  }
 }
 
 async function getQueueLength(queueName) {
