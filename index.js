@@ -604,15 +604,19 @@ async function consumeStream() {
                 console.log(
                   `Socket with ID ${firstClient.socketId} has been disconnected.`
                 );
-
-                // Acknowledge the message
-                await fastify.redis.xack(STREAM_KEY, CONSUMER_GROUP, id);
               }
             }
             // 업데이트된 큐 및 접속자 수 재확인
             await broadcastQueueUpdate(queueName);
           } catch (err) {
             console.error(err);
+          } finally {
+            // Acknowledge the message
+            await fastify.redis
+              .xack(STREAM_KEY, CONSUMER_GROUP, id)
+              .catch((ackErr) => {
+                console.error("Failed to acknowledge message:", ackErr);
+              });
           }
         }
       }
