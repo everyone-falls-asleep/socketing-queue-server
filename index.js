@@ -607,7 +607,7 @@ async function consumeStream() {
               }
             }
             // 업데이트된 큐 및 접속자 수 재확인
-            await broadcastQueueUpdate(queueName);
+            // await broadcastQueueUpdate(queueName);
           } catch (err) {
             console.error(err);
           } finally {
@@ -662,7 +662,7 @@ io.on("connection", (socket) => {
       // 큐에 유저 추가
       await addClientToQueue(queueName, socket.id, sub);
       socket.join(queueName);
-      await broadcastQueueUpdate(queueName);
+      // await broadcastQueueUpdate(queueName);
 
       fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
@@ -671,7 +671,7 @@ io.on("connection", (socket) => {
       const jwtToken = jwt.sign(
         {
           jti: crypto.randomUUID(),
-          sub: "scheduling-reservation-status",
+          sub: "scheduling",
           eventId,
           eventDateId,
         },
@@ -684,13 +684,15 @@ io.on("connection", (socket) => {
       await fetch("https://socketing.hjyoon.me/scheduling/reservation/status", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${jwtToken}`, // JWT 토큰 추가
         },
-        body: JSON.stringify({
-          eventId,
-          eventDateId,
-        }),
+      });
+
+      await fetch("https://socketing.hjyoon.me/scheduling/queue/status", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwtToken}`, // JWT 토큰 추가
+        },
       });
     } catch (err) {
       fastify.log.error(
@@ -706,7 +708,7 @@ io.on("connection", (socket) => {
     const keys = await scanForKeys("queue:*");
     for (const queueName of keys) {
       if ((await removeClientFromQueue(queueName, socket.id, sub)) > 0) {
-        await broadcastQueueUpdate(queueName);
+        // await broadcastQueueUpdate(queueName);
         const [eventId, eventDateId] = queueName.split(":")[1].split("_");
         await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
         break;
