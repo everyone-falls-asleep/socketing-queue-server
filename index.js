@@ -4,7 +4,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import fastifyRedis from "@fastify/redis";
 import fastifyPostgres from "@fastify/postgres";
-import fastifyRabbit from "fastify-rabbitmq";
+// import fastifyRabbit from "fastify-rabbitmq";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import jwt from "jsonwebtoken";
@@ -25,7 +25,7 @@ const schema = {
     "CACHE_HOST",
     "CACHE_PORT",
     "DB_URL",
-    "MQ_URL",
+    // "MQ_URL",
     "MAX_ROOM_CONNECTIONS",
   ],
   properties: {
@@ -47,9 +47,9 @@ const schema = {
     DB_URL: {
       type: "string",
     },
-    MQ_URL: {
-      type: "string",
-    },
+    // MQ_URL: {
+    //   type: "string",
+    // },
     MAX_ROOM_CONNECTIONS: {
       type: "integer",
     },
@@ -80,9 +80,9 @@ await fastify.register(fastifyPostgres, {
   connectionString: fastify.config.DB_URL,
 });
 
-await fastify.register(fastifyRabbit, {
-  connection: fastify.config.MQ_URL,
-});
+// await fastify.register(fastifyRabbit, {
+//   connection: fastify.config.MQ_URL,
+// });
 
 await fastify.register(fastifyStatic, {
   root: join(__dirname, "dist"),
@@ -98,7 +98,7 @@ fastify.get("/readiness", async (request, reply) => {
   try {
     let redisStatus = { status: "disconnected", message: "" };
     let dbStatus = { status: "disconnected", message: "" };
-    let rabbitStatus = { status: "disconnected", message: "" };
+    // let rabbitStatus = { status: "disconnected", message: "" };
 
     // Redis 상태 확인
     try {
@@ -127,31 +127,31 @@ fastify.get("/readiness", async (request, reply) => {
     }
 
     // RabbitMQ 상태 확인
-    try {
-      if (fastify.rabbitmq.ready) {
-        rabbitStatus = {
-          status: "connected",
-          message: "RabbitMQ is connected and operational.",
-        };
-      } else {
-        rabbitStatus.message = "RabbitMQ is not connected.";
-      }
-    } catch (error) {
-      rabbitStatus.message = `RabbitMQ connection check failed: ${error.message}`;
-    }
+    // try {
+    //   if (fastify.rabbitmq.ready) {
+    //     rabbitStatus = {
+    //       status: "connected",
+    //       message: "RabbitMQ is connected and operational.",
+    //     };
+    //   } else {
+    //     rabbitStatus.message = "RabbitMQ is not connected.";
+    //   }
+    // } catch (error) {
+    //   rabbitStatus.message = `RabbitMQ connection check failed: ${error.message}`;
+    // }
 
     // 모든 상태가 정상일 때
     if (
       redisStatus.status === "connected" &&
-      dbStatus.status === "connected" &&
-      rabbitStatus.status === "connected"
+      dbStatus.status === "connected"
+      // rabbitStatus.status === "connected"
     ) {
       reply.send({
         status: "ok",
         message: "The server is ready.",
         redis: redisStatus,
         database: dbStatus,
-        rabbitmq: rabbitStatus,
+        // rabbitmq: rabbitStatus,
       });
     } else {
       // 하나라도 비정상일 때
@@ -160,7 +160,7 @@ fastify.get("/readiness", async (request, reply) => {
         message: "The server is not fully ready. See details below.",
         redis: redisStatus,
         database: dbStatus,
-        rabbitmq: rabbitStatus,
+        // rabbitmq: rabbitStatus,
       });
     }
   } catch (unexpectedError) {
@@ -270,63 +270,63 @@ async function broadcastQueueUpdate(queueName) {
   });
 }
 
-async function getRabbitMQQueueLength(queueName) {
-  let rabbitMQQueueLength = 0;
-  let channel = null;
-  try {
-    // RabbitMQ 채널 생성
-    channel = await fastify.rabbitmq.acquire();
+// async function getRabbitMQQueueLength(queueName) {
+//   let rabbitMQQueueLength = 0;
+//   let channel = null;
+//   try {
+//     // RabbitMQ 채널 생성
+//     channel = await fastify.rabbitmq.acquire();
 
-    // 큐 선언 또는 확인 (passive=true 옵션은 생략 가능)
-    const queueInfo = await channel.queueDeclare({
-      queue: queueName,
-      durable: true,
-    });
+//     // 큐 선언 또는 확인 (passive=true 옵션은 생략 가능)
+//     const queueInfo = await channel.queueDeclare({
+//       queue: queueName,
+//       durable: true,
+//     });
 
-    // 메시지 수 가져오기
-    rabbitMQQueueLength = queueInfo.messageCount;
-  } catch (err) {
-    if (err.replyCode === 404) {
-      // 큐가 없으면 메시지 수는 0
-      rabbitMQQueueLength = 0;
-    } else {
-      throw err; // 에러를 상위로 전달하여 호출부에서 처리
-    }
-  } finally {
-    if (channel) {
-      // 채널 닫기
-      await channel.close();
-    }
-  }
-  return rabbitMQQueueLength;
-}
+//     // 메시지 수 가져오기
+//     rabbitMQQueueLength = queueInfo.messageCount;
+//   } catch (err) {
+//     if (err.replyCode === 404) {
+//       // 큐가 없으면 메시지 수는 0
+//       rabbitMQQueueLength = 0;
+//     } else {
+//       throw err; // 에러를 상위로 전달하여 호출부에서 처리
+//     }
+//   } finally {
+//     if (channel) {
+//       // 채널 닫기
+//       await channel.close();
+//     }
+//   }
+//   return rabbitMQQueueLength;
+// }
 
-async function waitForMessage(queueName) {
-  // RabbitMQ 채널 생성
-  const channel = await fastify.rabbitmq.acquire();
+// async function waitForMessage(queueName) {
+//   // RabbitMQ 채널 생성
+//   const channel = await fastify.rabbitmq.acquire();
 
-  // 큐가 없으면 선언
-  await channel.queueDeclare({ queue: queueName, durable: true });
+//   // 큐가 없으면 선언
+//   await channel.queueDeclare({ queue: queueName, durable: true });
 
-  // 메시지 대기
-  return new Promise((resolve, reject) => {
-    try {
-      channel.basicConsume(
-        queueName,
-        (msg) => {
-          if (msg) {
-            channel.basicAck(msg); // 메시지 확인
-            const content = msg.body.toString(); // 메시지 내용 파싱
-            resolve(content); // 메시지를 반환
-          }
-        },
-        { noAck: false } // noAck=false로 메시지 확인 활성화
-      );
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
+//   // 메시지 대기
+//   return new Promise((resolve, reject) => {
+//     try {
+//       channel.basicConsume(
+//         queueName,
+//         (msg) => {
+//           if (msg) {
+//             channel.basicAck(msg); // 메시지 확인
+//             const content = msg.body.toString(); // 메시지 내용 파싱
+//             resolve(content); // 메시지를 반환
+//           }
+//         },
+//         { noAck: false } // noAck=false로 메시지 확인 활성화
+//       );
+//     } catch (error) {
+//       reject(error);
+//     }
+//   });
+// }
 
 function decorrelatedJitter(baseDelay, maxDelay, previousDelay) {
   if (!previousDelay) {
