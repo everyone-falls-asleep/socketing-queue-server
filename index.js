@@ -167,7 +167,7 @@ fastify.get("/readiness", async (request, reply) => {
     // 예기치 못한 오류 처리
     fastify.log.error(
       "Readiness check encountered an unexpected error:",
-      unexpectedError
+      unexpectedError,
     );
     reply.status(500).send({
       status: "error",
@@ -226,7 +226,7 @@ async function scanForKeys(pattern) {
       "MATCH",
       pattern,
       "COUNT",
-      100
+      100,
     );
     cursor = newCursor;
     keys.push(...foundKeys);
@@ -334,7 +334,7 @@ function decorrelatedJitter(baseDelay, maxDelay, previousDelay) {
   }
   return Math.min(
     maxDelay,
-    Math.random() * (previousDelay * 3 - baseDelay) + baseDelay
+    Math.random() * (previousDelay * 3 - baseDelay) + baseDelay,
   );
 }
 
@@ -347,7 +347,7 @@ async function getRoomUserCount(roomName) {
       return parseInt(res || "0");
     } catch (err) {
       console.error(
-        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`
+        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`,
       );
       await new Promise((resolve) => {
         delay = decorrelatedJitter(100, 60000, delay);
@@ -365,7 +365,7 @@ async function getSocketsInRoom(queueName) {
       return await io.in(queueName).fetchSockets();
     } catch (err) {
       console.error(
-        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`
+        `Timeout reached, retrying (attempt ${attempt}/${maxRetries})...`,
       );
       await new Promise((resolve) => {
         delay = decorrelatedJitter(100, 60000, delay);
@@ -404,7 +404,7 @@ async function findIndexInQueue(queueName, socketId, userId) {
       script,
       1,
       queueName,
-      JSON.stringify(obj)
+      JSON.stringify(obj),
     );
     return index;
   } catch (err) {
@@ -431,7 +431,7 @@ async function popFirstClientOfQueue(queueName) {
       } catch (parseError) {
         console.error(
           `Failed to parse item from queue "${queueName}":`,
-          parseError
+          parseError,
         );
         return null; // 파싱 실패 시 null 반환
       }
@@ -489,7 +489,7 @@ async function issueToken(firstClient, eventId, eventDateId) {
     fastify.config.JWT_SECRET_FOR_ENTRANCE,
     {
       expiresIn: 600, // 10분
-    }
+    },
   );
 
   await fastify.redis.sadd(`issued_tokens:${roomName}`, token);
@@ -521,10 +521,10 @@ async function initializeStream() {
       STREAM_KEY,
       CONSUMER_GROUP,
       "0",
-      "MKSTREAM"
+      "MKSTREAM",
     );
     fastify.log.info(
-      `Consumer group '${CONSUMER_GROUP}' created or already exists.`
+      `Consumer group '${CONSUMER_GROUP}' created or already exists.`,
     );
   } catch (err) {
     if (err.message.includes("BUSYGROUP")) {
@@ -534,6 +534,36 @@ async function initializeStream() {
       process.exit(1);
     }
   }
+}
+
+async function ensureGroup(startId = "$") {
+  try {
+    await fastify.redis.xgroup(
+      "CREATE",
+      STREAM_KEY,
+      CONSUMER_GROUP,
+      startId,
+      "MKSTREAM",
+    );
+    fastify.log.info(
+      `XGROUP ensured: ${STREAM_KEY}/${CONSUMER_GROUP} @ ${startId}`,
+    );
+  } catch (e) {
+    if (!String(e?.message || e).includes("BUSYGROUP")) throw e;
+  }
+}
+
+async function waitRedisReady() {
+  let delay = 50;
+  for (let i = 0; i < 40; i++) {
+    try {
+      const pong = await fastify.redis.ping();
+      if (pong === "PONG") return;
+    } catch {}
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(delay * 2, 1000);
+  }
+  throw new Error("Redis not ready");
 }
 
 // Function to read messages from the stream
@@ -550,14 +580,22 @@ async function consumeStream() {
         1000, // 1 seconds
         "STREAMS",
         STREAM_KEY,
-        ">"
+        ">",
       );
 
       if (response) {
         const [stream, messages] = response[0];
         for (const [id, fields] of messages) {
-          const eventId = fields[0];
-          const eventDateId = fields[1];
+          // fields = [field1, value1, field2, value2, ...]
+          const map = {};
+          for (let i = 0; i < fields.length; i += 2) {
+            map[fields[i]] = fields[i + 1];
+          }
+          const eventId = map.eventId;
+          const eventDateId = map.eventDateId;
+
+          // const eventId = fields[0];
+          // const eventDateId = fields[1];
           const roomName = `${eventId}_${eventDateId}`;
           const queueName = `queue:${roomName}`;
 
@@ -565,7 +603,7 @@ async function consumeStream() {
             await cleanupExpiredTokens(roomName);
 
             const issuedTokenCount = await fastify.redis.scard(
-              `issued_tokens:${roomName}`
+              `issued_tokens:${roomName}`,
             );
 
             const connectedClientsCount = await getRoomUserCount(roomName);
@@ -580,29 +618,32 @@ async function consumeStream() {
                 const { queueLength, firstClient } = result;
 
                 fastify.log.info(
-                  `Notified client ${firstClient.socketId} it's their turn.`
+                  `Notified client ${firstClient.socketId} it's their turn.`,
                 );
 
                 const token = await issueToken(
                   firstClient,
                   eventId,
-                  eventDateId
+                  eventDateId,
                 );
 
                 io.to(firstClient.socketId).emit("tokenIssued", { token });
                 fastify.log.info(
-                  `Token issued to client ${firstClient.socketId}`
+                  `Token issued to client ${firstClient.socketId}`,
                 );
 
-                io.of("/").adapter.disconnectSockets(
-                  {
-                    rooms: new Set([firstClient.socketId]),
-                    except: new Set(),
-                  }, // 필터링 기준
-                  true // underlying connection 닫기
-                );
+                // io.of("/").adapter.disconnectSockets(
+                //   {
+                //     rooms: new Set([firstClient.socketId]),
+                //     except: new Set(),
+                //   }, // 필터링 기준
+                //   true, // underlying connection 닫기
+                // );
+
+                // 개별 소켓 강제 종료 (보다 직관적)
+                io.sockets.sockets.get(firstClient.socketId)?.disconnect(true);
                 console.log(
-                  `Socket with ID ${firstClient.socketId} has been disconnected.`
+                  `Socket with ID ${firstClient.socketId} has been disconnected.`,
                 );
               }
             }
@@ -621,6 +662,13 @@ async function consumeStream() {
         }
       }
     } catch (err) {
+      // 자가복구 핵심
+      const m = String(err?.message || err);
+      if (m.includes("NOGROUP")) {
+        fastify.log.warn("NOGROUP detected. Recreating group...");
+        await ensureGroup("$"); // 필요 시 "0-0"
+        continue;
+      }
       console.error(err);
       // Optional: Implement retry logic or exit
     }
@@ -628,8 +676,11 @@ async function consumeStream() {
 }
 
 // Start consuming the stream
-await initializeStream();
-consumeStream(); // Note: Not awaiting to allow it to run concurrently
+// await initializeStream();
+await waitRedisReady(); // ← Redis 준비 보장
+await ensureGroup("$"); // ← 그룹/스트림 보장 ($: 이후 것부터)
+// Note: Not awaiting to allow it to run concurrently
+consumeStream(); // ← 그 다음에 소비 시작
 
 io.on("connection", (socket) => {
   fastify.log.info(`New client connected: ${socket.id}`);
@@ -652,7 +703,7 @@ io.on("connection", (socket) => {
     const queueName = `queue:${roomName}`;
 
     // 중복 연결 방지
-    if ((await findIndexInQueue(queueName, socket.id)) != -1) {
+    if ((await findIndexInQueue(queueName, socket.id, sub)) != -1) {
       socket.emit("error", { message: "Already in the queue." });
       socket.disconnect(true);
       return;
@@ -666,7 +717,15 @@ io.on("connection", (socket) => {
 
       fastify.log.info(`Client ${socket.id} joined queue: ${queueName}`);
 
-      await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+      // await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+      await fastify.redis.xadd(
+        STREAM_KEY,
+        "*",
+        "eventId",
+        eventId,
+        "eventDateId",
+        eventDateId,
+      );
 
       const jwtToken = jwt.sign(
         {
@@ -678,7 +737,7 @@ io.on("connection", (socket) => {
         fastify.config.JWT_SECRET,
         {
           expiresIn: 600, // 10분
-        }
+        },
       );
 
       await fetch("https://socketing.hjyoon.me/scheduling/reservation/status", {
@@ -696,7 +755,7 @@ io.on("connection", (socket) => {
       });
     } catch (err) {
       fastify.log.error(
-        `Error processing queue for ${socket.id}: ${err.message}`
+        `Error processing queue for ${socket.id}: ${err.message}`,
       );
       socket.emit("error", { message: "Internal server error." });
       socket.disconnect(true);
@@ -710,17 +769,47 @@ io.on("connection", (socket) => {
       if ((await removeClientFromQueue(queueName, socket.id, sub)) > 0) {
         // await broadcastQueueUpdate(queueName);
         const [eventId, eventDateId] = queueName.split(":")[1].split("_");
-        await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+        // await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+        await fastify.redis.xadd(
+          STREAM_KEY,
+          "*",
+          "eventId",
+          eventId,
+          "eventDateId",
+          eventDateId,
+        );
         break;
       }
     }
   });
 });
 
-io.on("leave-room", async ({ room, id }) => {
-  if (room != id) {
+// io.on("leave-room", async ({ room, id }) => {
+//   if (room != id) {
+//     const [eventId, eventDateId] = room.split("_");
+//     // await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+//     await fastify.redis.xadd(
+//       STREAM_KEY,
+//       "*",
+//       "eventId",
+//       eventId,
+//       "eventDateId",
+//       eventDateId,
+//     );
+//   }
+// });
+
+io.of("/").adapter.on("leave-room", async (room, id) => {
+  if (room !== id) {
     const [eventId, eventDateId] = room.split("_");
-    await fastify.redis.xadd(STREAM_KEY, "*", eventId, eventDateId);
+    await fastify.redis.xadd(
+      STREAM_KEY,
+      "*",
+      "eventId",
+      eventId,
+      "eventDateId",
+      eventDateId,
+    );
   }
 });
 
@@ -745,7 +834,7 @@ let shutdownInProgress = false; // 중복 호출 방지 플래그
 async function gracefulShutdown(signal) {
   if (shutdownInProgress) {
     fastify.log.warn(
-      `Shutdown already in progress. Ignoring signal: ${signal}`
+      `Shutdown already in progress. Ignoring signal: ${signal}`,
     );
     return;
   }
